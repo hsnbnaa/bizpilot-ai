@@ -29,40 +29,42 @@ FORBIDDEN_EXPRESSIONS = {
 }
 
 
-def contains_aggregate(select_expression):
-    """
-    Check whether a SELECT projection contains an aggregate function,
-    including aggregates nested inside ROUND, CASE, arithmetic, etc.
-
-    Nested SELECT statements are excluded because their aggregation
-    does not necessarily make the outer query a scalar aggregate.
-    """
-
-    for node in select_expression.walk():
-
-        if isinstance(node, exp.Select):
-            continue
-
-        if isinstance(node, exp.AggFunc):
-            return True
-
-    return False
-
-
 def is_scalar_aggregate(query):
     """
-    A scalar aggregate has aggregate functions in its outer SELECT
-    projections and no outer GROUP BY clause.
+    A scalar aggregate has only aggregate or constant projections and
+    no outer grouping or windowing.
     """
 
-    has_group_by = query.args.get("group") is not None
+    # Treat only a query whose every outer projection is an aggregate
+    # expression (or a literal) as scalar. Windowed aggregates and
+    # projections with row-level columns must retain their row limit.
+    if (
+        query.args.get("group") is not None
+        or query.args.get("having") is not None
+    ):
+        return False
 
-    has_aggregate = any(
-        contains_aggregate(projection)
-        for projection in query.expressions
-    )
+    has_aggregate = False
+    for projection in query.expressions:
+        aggregates = []
+        for node in projection.walk():
+            if isinstance(node, exp.Select):
+                continue
+            if isinstance(node, exp.Window):
+                return False
+            if isinstance(node, exp.AggFunc):
+                aggregates.append(node)
+        if aggregates:
+            has_aggregate = True
+            continue
+        # A scalar constant beside an aggregate is still one output row.
+        if isinstance(projection, (exp.Literal, exp.Alias)):
+            inner = projection.this if isinstance(projection, exp.Alias) else projection
+            if isinstance(inner, exp.Literal):
+                continue
+        return False
 
-    return has_aggregate and not has_group_by
+    return has_aggregate
 
 
 def validate_sql(sql: str) -> str:
@@ -117,6 +119,8 @@ def validate_sql(sql: str) -> str:
         for table in query.find_all(exp.Table):
 
             table_name = table.name.lower()
+            schema_name = (table.db or "").lower()
+            catalog_name = (table.catalog or "").lower()
 
             if (
                 table_name not in ALLOWED_TABLES
@@ -125,6 +129,9 @@ def validate_sql(sql: str) -> str:
                 raise ValueError(
                     f"Unauthorized table: {table_name}"
                 )
+
+            if schema_name not in {"", "public"} or catalog_name:
+                raise ValueError("Schema-qualified tables are not allowed.")
 
         # ======================================
         # 5. PREVENT SELECT *

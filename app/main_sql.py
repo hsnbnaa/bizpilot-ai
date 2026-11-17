@@ -35,9 +35,6 @@ def ask_business_question(question: str):
 
     while True:
 
-        print("\n[DEBUG] Resolved Business Question:")
-        print(resolved_question)
-        
         generation_result = generate_sql(resolved_question)
 
         if not isinstance(generation_result, dict):
@@ -240,10 +237,13 @@ def ask_business_question(question: str):
 
         print("\n[2] Reviewing SQL business logic...")
 
-        # current_sql = review_sql(
-        #     question=resolved_question,
-        #     generated_sql=current_sql
-        # )
+        if generation_result.get("deterministic"):
+            print("Using the predefined metric query.")
+        else:
+            current_sql = review_sql(
+                question=resolved_question,
+                generated_sql=current_sql
+            )
 
         print("\n[SQL Review Result]")
         print(current_sql)
@@ -278,7 +278,7 @@ def ask_business_question(question: str):
         except SQLAlchemyError as error:
 
             print("\nSQL Execution Error:")
-            print(error)
+            print("Database execution failed; details were withheld.")
 
             if attempt >= MAX_SQL_RETRIES:
                 raise RuntimeError(
@@ -321,7 +321,8 @@ def ask_business_question(question: str):
 
     answer = generate_answer(
         resolved_question,
-        query_result
+        query_result,
+        safe_sql,
     )
 
     # ==========================================
